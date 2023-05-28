@@ -4,11 +4,17 @@ use chrono::{DateTime, Utc};
 use crate::typemap::TypeMap;
 
 #[derive(Debug)]
-pub struct Error(pub String);
+pub enum Error {
+    Retry,
+    Fail,
+}
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(match self {
+            Error::Retry => "Retry",
+            Error::Fail => "Fail",
+        })
     }
 }
 

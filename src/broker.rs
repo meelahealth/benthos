@@ -13,8 +13,7 @@ pub struct Broker<B> {
     backend: Arc<B>,
     poll_interval: u64,
     data: Arc<TypeMap>,
-    active_tasks:
-        Arc<tokio::sync::RwLock<HashMap<String, tokio::task::JoinHandle<Result<(), Error>>>>>,
+    active_tasks: Arc<tokio::sync::RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
     handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
 }
 
@@ -47,8 +46,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
     async fn _start(
         backend: Arc<B>,
         data: Arc<TypeMap>,
-        active_tasks_lock:
-            Arc<tokio::sync::RwLock<HashMap<String, tokio::task::JoinHandle<Result<(), Error>>>>>,
+        active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
         handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
         poll_interval: u64,
     ) {
@@ -64,7 +62,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 }
             };
 
-            tracing::debug!(count=new_ids.len(), "New ids");
+            tracing::debug!(count = new_ids.len(), "New ids");
             for id in new_ids {
                 let active_tasks = active_tasks_lock.read().await;
                 if active_tasks.contains_key(&id) {
@@ -91,13 +89,29 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                     let active_tasks_lock = Arc::clone(&active_tasks_lock);
                     let data = Arc::clone(&data);
                     let id = id.clone();
+                    let backend = backend.clone();
 
                     tokio::task::spawn(async move {
                         let _mm = rx.await.unwrap();
+                        let action = work_request.action.clone();
 
                         let result = handler.run(&*data, work_request).await;
+                        match result {
+                            Ok(_) => {
+                                backend.mark_succeeded(&id).await.unwrap();
+                            }
+                            Err(e) => match e {
+                                Error::Retry => {
+                                    tracing::error!(id=id, action=action, error=%e, "Task being retried");
+                                    backend.mark_attempted(&id).await.unwrap();
+                                }
+                                Error::Fail => {
+                                    tracing::error!(id=id, action=action, error=%e, "Task failed");
+                                    backend.mark_failed(&id).await.unwrap();
+                                }
+                            },
+                        }
                         active_tasks_lock.write().await.remove(&id);
-                        result
                     })
                 };
 
@@ -111,9 +125,9 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
 
     pub fn start_workers(&self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(Self::_start(
-            self.backend.clone(), 
-            self.data.clone(), 
-            self.active_tasks.clone(), 
+            self.backend.clone(),
+            self.data.clone(),
+            self.active_tasks.clone(),
             self.handlers.clone(),
             self.poll_interval,
         ))

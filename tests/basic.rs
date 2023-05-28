@@ -63,6 +63,10 @@ impl Backend for TestBackend {
         todo!();
     }
 
+    async fn mark_failed(&self, id: &str) -> Result<(), Self::Error> {
+        todo!();
+    }
+
     /// Queues a new work request.
     async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<(), Self::Error> {
         self.ids.lock().unwrap().push("iddd".to_string());
@@ -89,9 +93,11 @@ async fn smoke() {
         Arc::new(backend),
         1,
         Default::default(),
-        Arc::new([("test".to_string(), Arc::new(TestHandler) as _)]
-            .into_iter()
-            .collect()),
+        Arc::new(
+            [("test".to_string(), Arc::new(TestHandler) as _)]
+                .into_iter()
+                .collect(),
+        ),
     );
 
     let task = broker.start_workers();

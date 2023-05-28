@@ -20,7 +20,7 @@ impl TypeMap {
     pub fn new() -> Self {
         Self(FnvHashMap::default())
     }
-    
+
     pub fn insert<D: Any + Send + Sync>(&mut self, data: D) {
         self.0.insert(TypeId::of::<D>(), Box::new(data));
     }

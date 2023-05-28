@@ -18,6 +18,9 @@ pub trait Backend {
     /// Marks a work item as succeeded. Will increment attempts by one.
     async fn mark_succeeded(&self, id: &str) -> Result<(), Self::Error>;
 
+    /// Marks a work item as failed. Will increment attempts by one.
+    async fn mark_failed(&self, id: &str) -> Result<(), Self::Error>;
+
     /// Queues a new work request.
     async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<(), Self::Error>;
 }
