@@ -9,6 +9,7 @@ use crate::{
     typemap::TypeMap,
 };
 
+#[derive(Clone)]
 pub struct Broker<B> {
     backend: Arc<B>,
     poll_interval: u64,
@@ -17,6 +18,7 @@ pub struct Broker<B> {
     handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct NewWorkRequest {
     pub action: String,
     pub data: serde_json::Value,
