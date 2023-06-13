@@ -56,15 +56,18 @@ impl Backend for TestBackend {
     }
 
     async fn mark_attempted(&self, id: &str) -> Result<(), Self::Error> {
-        todo!();
+        println!("Attempted: {id}");
+        Ok(())
     }
 
     async fn mark_succeeded(&self, id: &str) -> Result<(), Self::Error> {
-        todo!();
+        println!("Succeeded: {id}");
+        Ok(())
     }
 
     async fn mark_failed(&self, id: &str) -> Result<(), Self::Error> {
-        todo!();
+        println!("Failed: {id}");
+        Ok(())
     }
 
     /// Queues a new work request.
@@ -78,6 +81,10 @@ struct TestHandler;
 
 #[async_trait]
 impl Task for TestHandler {
+    fn id(&self) -> &'static str {
+        "test"
+    }
+
     async fn run(&self, _data: &TypeMap, request: WorkRequest) -> Result<(), benthos::task::Error> {
         println!("{:?}", request);
         Ok(())
@@ -93,11 +100,7 @@ async fn smoke() {
         Arc::new(backend),
         1,
         Default::default(),
-        Arc::new(
-            [("test".to_string(), Arc::new(TestHandler) as _)]
-                .into_iter()
-                .collect(),
-        ),
+        &[Arc::new(TestHandler) as _],
     );
 
     let task = broker.start_workers();

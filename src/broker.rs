@@ -30,14 +30,19 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
         backend: Arc<B>,
         poll_interval: u64,
         data: Arc<TypeMap>,
-        handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
+        handlers: &[Arc<dyn Task + Send + Sync>],
     ) -> Self {
         Self {
             backend,
             poll_interval,
             data,
             active_tasks: Default::default(),
-            handlers,
+            handlers: Arc::new(
+                handlers
+                    .into_iter()
+                    .map(|t| (t.id().to_string(), t.clone()))
+                    .collect(),
+            ),
         }
     }
 

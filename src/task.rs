@@ -33,5 +33,9 @@ pub struct WorkRequest {
 
 #[async_trait]
 pub trait Task {
+    /// The name of the task.
+    fn id(&self) -> &'static str;
+
+    /// The task runner.
     async fn run(&self, data: &TypeMap, request: WorkRequest) -> Result<(), Error>;
 }
