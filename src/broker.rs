@@ -39,7 +39,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
             active_tasks: Default::default(),
             handlers: Arc::new(
                 handlers
-                    .into_iter()
+                    .iter()
                     .map(|t| (t.id().to_string(), t.clone()))
                     .collect(),
             ),
@@ -59,7 +59,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
     ) {
         tracing::info!("starting broker worker loop");
         loop {
-            tracing::debug!("Polling ids");
+            tracing::trace!("Polling ids");
             let new_ids = match backend.poll().await {
                 Ok(v) => v,
                 Err(e) => {
@@ -69,7 +69,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 }
             };
 
-            tracing::debug!(count = new_ids.len(), "New ids");
+            tracing::trace!(count = new_ids.len(), "New ids");
             for id in new_ids {
                 let active_tasks = active_tasks_lock.read().await;
                 if active_tasks.contains_key(&id) {
@@ -99,12 +99,14 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                     let backend = backend.clone();
 
                     tokio::task::spawn(async move {
-                        let _mm = rx.await.unwrap();
+                        rx.await.unwrap();
                         let action = work_request.action.clone();
 
-                        let result = handler.run(&*data, work_request).await;
+                        tracing::debug!(id = %id, "Starting task");
+                        let result = handler.run(&data, work_request).await;
                         match result {
                             Ok(_) => {
+                                tracing::debug!(id = %id, "Finished task");
                                 backend.mark_succeeded(&id).await.unwrap();
                             }
                             Err(e) => match e {

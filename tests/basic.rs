@@ -16,13 +16,13 @@ struct TestBackend {
 struct Error;
 
 impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Ok(())
     }
 }
 
 impl std::fmt::Debug for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Ok(())
     }
 }
@@ -71,7 +71,7 @@ impl Backend for TestBackend {
     }
 
     /// Queues a new work request.
-    async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<(), Self::Error> {
+    async fn add_work_request(&self, _work_request: NewWorkRequest) -> Result<(), Self::Error> {
         self.ids.lock().unwrap().push("iddd".to_string());
         Ok(())
     }
