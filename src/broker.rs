@@ -1,28 +1,72 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 use crate::{
-    backend::Backend,
-    task::{Error, Task},
+    backend::{Backend, BackendManager, Statistics, WorkRequestFilter},
+    task::{Error, Task, WorkRequest},
     typemap::TypeMap,
 };
+
+struct ActiveTask {
+    request: WorkRequest,
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+pub struct Monitor<B> {
+    backend: Arc<B>,
+    active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
+}
+
+impl<B: BackendManager> Monitor<B> {
+    pub async fn statistics(&self) -> Result<Statistics, B::Error> {
+        self.backend.statistics().await
+    }
+
+    pub async fn active_tasks(&self) -> Vec<WorkRequest> {
+        let mut active_tasks: Vec<WorkRequest> = {
+            let x = self.active_tasks.read().await;
+            x.values().map(|task| task.request.clone()).collect()
+        };
+
+        active_tasks.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+        active_tasks
+    }
+
+    pub async fn work_requests(
+        &self,
+        filter: WorkRequestFilter,
+    ) -> Result<Vec<WorkRequest>, B::Error> {
+        // This doesn't currently take into account active tasks.
+        self.backend.work_requests(filter).await
+    }
+}
 
 #[derive(Clone)]
 pub struct Broker<B> {
     backend: Arc<B>,
     poll_interval: u64,
     data: Arc<TypeMap>,
-    active_tasks: Arc<tokio::sync::RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
     handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewWorkRequest {
     pub action: String,
     pub data: serde_json::Value,
     pub not_before: Option<DateTime<Utc>>,
+}
+
+impl<B: BackendManager> Broker<B> {
+    pub fn monitor(&self) -> Monitor<B> {
+        Monitor {
+            backend: self.backend.clone(),
+            active_tasks: self.active_tasks.clone(),
+        }
+    }
 }
 
 impl<B: Backend + Send + Sync + 'static> Broker<B> {
@@ -53,7 +97,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
     async fn _start(
         backend: Arc<B>,
         data: Arc<TypeMap>,
-        active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+        active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
         handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
         poll_interval: u64,
     ) {
@@ -92,13 +136,14 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 drop(active_tasks);
                 let (tx, rx) = tokio::sync::oneshot::channel();
 
-                let handle = {
+                let task = {
                     let active_tasks_lock = Arc::clone(&active_tasks_lock);
                     let data = Arc::clone(&data);
                     let id = id.clone();
                     let backend = backend.clone();
 
-                    tokio::task::spawn(async move {
+                    let active_work_request = work_request.and_started_at(Utc::now());
+                    let handle = tokio::task::spawn(async move {
                         rx.await.unwrap();
                         let action = work_request.action.clone();
 
@@ -121,10 +166,14 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                             },
                         }
                         active_tasks_lock.write().await.remove(&id);
-                    })
+                    });
+                    ActiveTask {
+                        _handle: handle,
+                        request: active_work_request,
+                    }
                 };
 
-                active_tasks_lock.write().await.insert(id.clone(), handle);
+                active_tasks_lock.write().await.insert(id.clone(), task);
                 tx.send(()).unwrap();
             }
 

@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::{broker::NewWorkRequest, task::WorkRequest};
 
@@ -10,7 +12,16 @@ pub trait Backend {
     async fn poll(&self) -> Result<Vec<String>, Self::Error>;
 
     /// Returns a work request for the given identifier.
-    async fn work_request_with_id(&self, id: &str) -> Result<WorkRequest, Self::Error>;
+    async fn work_request_with_id<S: AsRef<str> + Send>(
+        &self,
+        id: S,
+    ) -> Result<WorkRequest, Self::Error>;
+
+    /// Returns a set of work requests for the given identifiers.
+    async fn work_request_with_ids<S: AsRef<str> + Send + Sync>(
+        &self,
+        id: &[S],
+    ) -> Result<Vec<WorkRequest>, Self::Error>;
 
     /// Marks an attempt was made.
     async fn mark_attempted(&self, id: &str) -> Result<(), Self::Error>;
@@ -23,4 +34,33 @@ pub trait Backend {
 
     /// Queues a new work request.
     async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Statistics {
+    pub processed: usize,
+    pub failed: usize,
+    pub busy: usize,
+    pub enqueued: usize,
+    pub retries: usize,
+    pub scheduled: usize,
+    pub dead: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkRequestFilter {
+    pub before: Option<DateTime<Utc>>,
+    pub after: Option<DateTime<Utc>>,
+}
+
+#[async_trait]
+pub trait BackendManager: Backend {
+    /// Returns statistics about the queue.
+    async fn statistics(&self) -> Result<Statistics, Self::Error>;
+
+    /// Returns work requests within the provided filter.
+    async fn work_requests(
+        &self,
+        filter: WorkRequestFilter,
+    ) -> Result<Vec<WorkRequest>, Self::Error>;
 }

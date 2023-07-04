@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::typemap::TypeMap;
 
@@ -20,7 +21,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkRequest {
     pub id: String,
     pub action: String,
@@ -29,6 +30,17 @@ pub struct WorkRequest {
     pub created_at: DateTime<Utc>,
     pub last_attempted_at: Option<DateTime<Utc>>,
     pub not_before: Option<DateTime<Utc>>,
+    pub succeeded_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<DateTime<Utc>>,
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+impl WorkRequest {
+    pub(crate) fn and_started_at(&self, started_at: DateTime<Utc>) -> WorkRequest {
+        let mut x = self.clone();
+        x.started_at = Some(started_at);
+        x
+    }
 }
 
 #[async_trait]

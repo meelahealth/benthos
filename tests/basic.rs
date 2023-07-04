@@ -43,16 +43,43 @@ impl Backend for TestBackend {
     }
 
     /// Returns a work request for the given identifier.
-    async fn work_request_with_id(&self, id: &str) -> Result<WorkRequest, Self::Error> {
+    async fn work_request_with_id<S: AsRef<str> + Send>(
+        &self,
+        id: S,
+    ) -> Result<WorkRequest, Self::Error> {
         Ok(WorkRequest {
-            id: id.to_string(),
+            id: id.as_ref().to_string(),
             action: "test".to_string(),
             data: serde_json::json!({ "test": true }),
             attempts: 0,
             created_at: Utc::now(),
             last_attempted_at: None,
             not_before: None,
+            started_at: None,
+            succeeded_at: None,
+            failed_at: None,
         })
+    }
+
+    async fn work_request_with_ids<S: AsRef<str> + Send + Sync>(
+        &self,
+        id: &[S],
+    ) -> Result<Vec<WorkRequest>, Self::Error> {
+        Ok(id
+            .iter()
+            .map(|id| WorkRequest {
+                id: id.as_ref().to_string(),
+                action: "test".to_string(),
+                data: serde_json::json!({ "test": true }),
+                attempts: 0,
+                created_at: Utc::now(),
+                last_attempted_at: None,
+                not_before: None,
+                started_at: None,
+                succeeded_at: None,
+                failed_at: None,
+            })
+            .collect())
     }
 
     async fn mark_attempted(&self, id: &str) -> Result<(), Self::Error> {
