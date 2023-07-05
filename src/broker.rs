@@ -149,19 +149,62 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
 
                         tracing::debug!(id = %id, "Starting task");
                         let result = handler.run(&data, work_request).await;
+                        let mut timeout = 1u64;
                         match result {
                             Ok(_) => {
                                 tracing::debug!(id = %id, "Finished task");
-                                backend.mark_succeeded(&id).await.unwrap();
+                                loop {
+                                    match backend.mark_succeeded(&id).await {
+                                        Ok(_) => {
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(error=%e, id=id, "Failed to mark succeeded; retrying in {} seconds", timeout);
+                                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                                timeout,
+                                            ))
+                                            .await;
+                                            timeout *= 2;
+                                        }
+                                    }
+                                }
                             }
                             Err(e) => match e {
                                 Error::Retry => {
                                     tracing::error!(id=id, action=action, error=%e, "Task being retried");
-                                    backend.mark_attempted(&id).await.unwrap();
+                                    loop {
+                                        match backend.mark_attempted(&id).await {
+                                            Ok(_) => {
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(error=%e, id=id, "Failed to mark attempted; retrying in {} seconds", timeout);
+                                                tokio::time::sleep(
+                                                    tokio::time::Duration::from_secs(timeout),
+                                                )
+                                                .await;
+                                                timeout *= 2;
+                                            }
+                                        }
+                                    }
                                 }
                                 Error::Fail => {
                                     tracing::error!(id=id, action=action, error=%e, "Task failed");
-                                    backend.mark_failed(&id).await.unwrap();
+                                    loop {
+                                        match backend.mark_failed(&id).await {
+                                            Ok(_) => {
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(error=%e, id=id, "Failed to mark failed; retrying in {} seconds", timeout);
+                                                tokio::time::sleep(
+                                                    tokio::time::Duration::from_secs(timeout),
+                                                )
+                                                .await;
+                                                timeout *= 2;
+                                            }
+                                        }
+                                    }
                                 }
                             },
                         }
