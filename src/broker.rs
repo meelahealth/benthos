@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use chrono::{DateTime, Utc, TimeZone};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
@@ -99,41 +99,56 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
         let data = backend.data();
         tracing::info!("starting broker worker loop");
 
-        let repeating_tasks = handlers
+        let mut repeating_tasks = handlers
             .values()
-            .filter_map(|x| x.repetition_rule().map(|_| x.clone()))
-            .collect::<Vec<_>>();
+            .filter_map(|x| {
+                x.repetition_rule()
+                    .map(|r| (x.id(), r.upcoming_owned(Utc).peekable()))
+            })
+            .collect::<HashMap<_, _>>();
 
         loop {
             tracing::trace!("polling repeating tasks");
             let repeating_work_requests = repeating_tasks
-                .iter()
-                .filter_map(|task| {
-                    task.repetition_rule()
-                        .unwrap()
-                        .after(rrule::Tz::UTC.from_utc_datetime(&Utc::now().naive_utc()))
-                        .all(1)
-                        .dates
-                        .pop()
-                        .map(|x| (task, x.with_timezone(&Utc)))
+                .iter_mut()
+                .filter_map(|(id, sched)| {
+                    while sched.peek().map(|t| t < &Utc::now()).unwrap_or_default() {
+                        sched.next();
+                    }
+
+                    if let Some(dt) = sched.peek() {
+                        return Some((*id, dt));
+                    }
+
+                    None
                 })
                 .collect::<Vec<_>>();
 
-            for (task, next_date) in repeating_work_requests {
-                let has_job = match backend.has_work_request(task.id(), next_date).await {
+            tracing::trace!(
+                "{:?}",
+                repeating_work_requests
+                    .iter()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>()
+            );
+
+            for (id, next_date) in repeating_work_requests {
+                let has_job = match backend.has_work_request(id, *next_date).await {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::error!(error=%e, id=task.id(), "Error while polling for repeating work request");
+                        tracing::error!(error=%e, id=id, "Error while polling for repeating work request");
                         continue;
                     }
                 };
 
                 if !has_job {
+                    let task = handlers.get(id).unwrap();
+
                     let work_request = backend
                         .add_work_request(NewWorkRequest {
                             action: task.id().to_string(),
                             data: task.generate_data(&data).await,
-                            not_before: Some(next_date),
+                            not_before: Some(*next_date),
                         })
                         .await;
 

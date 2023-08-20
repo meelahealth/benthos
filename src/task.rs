@@ -52,7 +52,7 @@ pub trait Task {
     async fn run(&self, data: &TypeMap, request: WorkRequest) -> Result<(), Error>;
 
     /// The repetition interval for the task.
-    fn repetition_rule(&self) -> Option<rrule::RRuleSet> {
+    fn repetition_rule(&self) -> Option<cron::Schedule> {
         None
     }
 
