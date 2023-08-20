@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, TimeZone};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
@@ -111,6 +111,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 .filter_map(|task| {
                     task.repetition_rule()
                         .unwrap()
+                        .after(rrule::Tz::UTC.from_utc_datetime(&Utc::now().naive_utc()))
                         .all(1)
                         .dates
                         .pop()
