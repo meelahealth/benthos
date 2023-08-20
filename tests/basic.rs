@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use benthos::{
     backend::Backend,
     broker::{Broker, NewWorkRequest},
-    task::{RepeatTask, Task, WorkRequest},
+    task::{Task, WorkRequest},
     TypeMap,
 };
 use chrono::{DateTime, Utc};
@@ -135,7 +135,7 @@ async fn smoke() {
     let backend = TestBackend {
         ids: Mutex::new(vec!["1".to_string(), "2".to_string()]),
     };
-    let broker = Broker::new(Arc::new(backend), 1, &[Arc::new(TestHandler) as _], &[]);
+    let broker = Broker::new(Arc::new(backend), 1, &[Arc::new(TestHandler) as _]);
 
     let task = broker.start_workers();
     broker

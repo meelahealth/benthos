@@ -6,7 +6,7 @@ use tokio::time::sleep;
 
 use crate::{
     backend::{Backend, BackendManager, Statistics, WorkRequestFilter},
-    task::{Error, RepeatTask, Task, WorkRequest},
+    task::{Error, Task, WorkRequest},
 };
 
 struct ActiveTask {
@@ -49,7 +49,6 @@ pub struct Broker<B> {
     poll_interval: u64,
     active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
     tasks: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
-    repeating_tasks: Arc<HashMap<String, Arc<dyn RepeatTask + Send + Sync>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +72,6 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
         backend: Arc<B>,
         poll_interval: u64,
         handlers: &[Arc<dyn Task + Send + Sync>],
-        repeating_tasks: &[Arc<dyn RepeatTask + Send + Sync>],
     ) -> Self {
         Self {
             backend,
@@ -81,12 +79,6 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
             active_tasks: Default::default(),
             tasks: Arc::new(
                 handlers
-                    .iter()
-                    .map(|t| (t.id().to_string(), t.clone()))
-                    .collect(),
-            ),
-            repeating_tasks: Arc::new(
-                repeating_tasks
                     .iter()
                     .map(|t| (t.id().to_string(), t.clone()))
                     .collect(),
@@ -102,18 +94,23 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
         backend: Arc<B>,
         active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
         handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
-        repeating_tasks: Arc<HashMap<String, Arc<dyn RepeatTask + Send + Sync>>>,
         poll_interval: u64,
     ) {
         let data = backend.data();
-
         tracing::info!("starting broker worker loop");
+
+        let repeating_tasks = handlers
+            .values()
+            .filter_map(|x| x.repetition_rule().map(|_| x.clone()))
+            .collect::<Vec<_>>();
+
         loop {
             tracing::trace!("polling repeating tasks");
             let repeating_work_requests = repeating_tasks
-                .values()
+                .iter()
                 .filter_map(|task| {
                     task.repetition_rule()
+                        .unwrap()
                         .all(1)
                         .dates
                         .pop()
@@ -275,7 +272,6 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
             self.backend.clone(),
             self.active_tasks.clone(),
             self.tasks.clone(),
-            self.repeating_tasks.clone(),
             self.poll_interval,
         ))
     }

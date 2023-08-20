@@ -50,13 +50,14 @@ pub trait Task {
 
     /// The task runner.
     async fn run(&self, data: &TypeMap, request: WorkRequest) -> Result<(), Error>;
-}
 
-#[async_trait]
-pub trait RepeatTask: Task {
     /// The repetition interval for the task.
-    fn repetition_rule(&self) -> rrule::RRuleSet;
+    fn repetition_rule(&self) -> Option<rrule::RRuleSet> {
+        None
+    }
 
     /// Generates the data for the pending task to be run.
-    async fn generate_data(&self, data: &TypeMap) -> serde_json::Value;
+    async fn generate_data(&self, _data: &TypeMap) -> serde_json::Value {
+        serde_json::json!({})
+    }
 }
