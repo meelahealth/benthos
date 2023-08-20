@@ -6,8 +6,7 @@ use tokio::time::sleep;
 
 use crate::{
     backend::{Backend, BackendManager, Statistics, WorkRequestFilter},
-    task::{Error, Task, WorkRequest},
-    typemap::TypeMap,
+    task::{Error, RepeatTask, Task, WorkRequest},
 };
 
 struct ActiveTask {
@@ -48,9 +47,9 @@ impl<B: BackendManager> Monitor<B> {
 pub struct Broker<B> {
     backend: Arc<B>,
     poll_interval: u64,
-    data: Arc<TypeMap>,
     active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
-    handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
+    tasks: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
+    repeating_tasks: Arc<HashMap<String, Arc<dyn RepeatTask + Send + Sync>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,16 +72,21 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
     pub fn new(
         backend: Arc<B>,
         poll_interval: u64,
-        data: Arc<TypeMap>,
         handlers: &[Arc<dyn Task + Send + Sync>],
+        repeating_tasks: &[Arc<dyn RepeatTask + Send + Sync>],
     ) -> Self {
         Self {
             backend,
             poll_interval,
-            data,
             active_tasks: Default::default(),
-            handlers: Arc::new(
+            tasks: Arc::new(
                 handlers
+                    .iter()
+                    .map(|t| (t.id().to_string(), t.clone()))
+                    .collect(),
+            ),
+            repeating_tasks: Arc::new(
+                repeating_tasks
                     .iter()
                     .map(|t| (t.id().to_string(), t.clone()))
                     .collect(),
@@ -96,13 +100,55 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
 
     async fn _start(
         backend: Arc<B>,
-        data: Arc<TypeMap>,
         active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
         handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
+        repeating_tasks: Arc<HashMap<String, Arc<dyn RepeatTask + Send + Sync>>>,
         poll_interval: u64,
     ) {
+        let data = backend.data();
+
         tracing::info!("starting broker worker loop");
         loop {
+            tracing::trace!("polling repeating tasks");
+            let repeating_work_requests = repeating_tasks
+                .values()
+                .filter_map(|task| {
+                    task.repetition_rule()
+                        .all(1)
+                        .dates
+                        .pop()
+                        .map(|x| (task, x.with_timezone(&Utc)))
+                })
+                .collect::<Vec<_>>();
+
+            for (task, next_date) in repeating_work_requests {
+                let has_job = match backend.has_work_request(task.id(), next_date).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(error=%e, id=task.id(), "Error while polling for repeating work request");
+                        continue;
+                    }
+                };
+
+                if !has_job {
+                    let work_request = backend
+                        .add_work_request(NewWorkRequest {
+                            action: task.id().to_string(),
+                            data: task.generate_data(&data).await,
+                            not_before: Some(next_date),
+                        })
+                        .await;
+
+                    match work_request {
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::error!(error=%e, "Failed to add work request");
+                            continue;
+                        }
+                    }
+                }
+            }
+
             tracing::trace!("Polling ids");
             let new_ids = match backend.poll().await {
                 Ok(v) => v,
@@ -227,9 +273,9 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
     pub fn start_workers(&self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(Self::_start(
             self.backend.clone(),
-            self.data.clone(),
             self.active_tasks.clone(),
-            self.handlers.clone(),
+            self.tasks.clone(),
+            self.repeating_tasks.clone(),
             self.poll_interval,
         ))
     }

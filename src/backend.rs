@@ -1,12 +1,17 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{broker::NewWorkRequest, task::WorkRequest};
+use crate::{broker::NewWorkRequest, task::WorkRequest, TypeMap};
 
 #[async_trait]
 pub trait Backend {
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Shared data for all tasks.
+    fn data(&self) -> Arc<TypeMap>;
 
     /// Returns a list of work request identifiers that are ready to be processed.
     async fn poll(&self) -> Result<Vec<String>, Self::Error>;
@@ -34,6 +39,13 @@ pub trait Backend {
 
     /// Queues a new work request.
     async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<(), Self::Error>;
+
+    /// Check if work request with given action and date already exists.
+    async fn has_work_request(
+        &self,
+        action: &str,
+        next_date: DateTime<Utc>,
+    ) -> Result<bool, Self::Error>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

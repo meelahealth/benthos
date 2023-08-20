@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use benthos::{
     backend::Backend,
     broker::{Broker, NewWorkRequest},
-    task::{Task, WorkRequest},
+    task::{RepeatTask, Task, WorkRequest},
     TypeMap,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 struct TestBackend {
     ids: Mutex<Vec<String>>,
@@ -32,6 +32,18 @@ impl std::error::Error for Error {}
 #[async_trait]
 impl Backend for TestBackend {
     type Error = Error;
+
+    fn data(&self) -> Arc<TypeMap> {
+        Arc::new(Default::default())
+    }
+
+    async fn has_work_request(
+        &self,
+        action: &str,
+        next_date: DateTime<Utc>,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
 
     /// Returns a list of work request identifiers that are ready to be processed.
     async fn poll(&self) -> Result<Vec<String>, Self::Error> {
@@ -123,12 +135,7 @@ async fn smoke() {
     let backend = TestBackend {
         ids: Mutex::new(vec!["1".to_string(), "2".to_string()]),
     };
-    let broker = Broker::new(
-        Arc::new(backend),
-        1,
-        Default::default(),
-        &[Arc::new(TestHandler) as _],
-    );
+    let broker = Broker::new(Arc::new(backend), 1, &[Arc::new(TestHandler) as _], &[]);
 
     let task = broker.start_workers();
     broker
