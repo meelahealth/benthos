@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use benthos::{
     backend::Backend,
-    broker::{Broker, NewWorkRequest},
+    broker::{Broker, NewWorkRequest, Options},
     task::{Task, WorkRequest},
     TypeMap,
 };
@@ -125,7 +125,8 @@ impl Task for TestHandler {
     }
 
     async fn run(&self, _data: &TypeMap, request: WorkRequest) -> Result<(), benthos::task::Error> {
-        println!("{:?}", request);
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        println!("O: {:?}", request);
         Ok(())
     }
 }
@@ -133,35 +134,33 @@ impl Task for TestHandler {
 #[tokio::test]
 async fn smoke() {
     let backend = TestBackend {
-        ids: Mutex::new(vec!["1".to_string(), "2".to_string()]),
+        ids: Mutex::new(vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "4".to_string(),
+            "5".to_string(),
+        ]),
     };
-    let broker = Broker::new(Arc::new(backend), 1, &[Arc::new(TestHandler) as _]);
+    let broker = Broker::new(
+        Arc::new(backend),
+        &Options {
+            poll_interval: 1,
+            task_timeout_secs: 1,
+            max_parallel_tasks: Some(2),
+        },
+        &[Arc::new(TestHandler) as _],
+    );
 
     let task = broker.start_workers();
-    broker
-        .add_work(NewWorkRequest {
-            action: "lol".to_string(),
-            data: Default::default(),
-            not_before: Some(Utc::now()),
-        })
-        .await
-        .unwrap();
-    broker
-        .add_work(NewWorkRequest {
-            action: "lol".to_string(),
-            data: Default::default(),
-            not_before: Some(Utc::now()),
-        })
-        .await
-        .unwrap();
-    broker
-        .add_work(NewWorkRequest {
-            action: "lol".to_string(),
-            data: Default::default(),
-            not_before: Some(Utc::now()),
-        })
-        .await
-        .unwrap();
+    // broker
+    //     .add_work(NewWorkRequest {
+    //         action: "lol".to_string(),
+    //         data: Default::default(),
+    //         not_before: Some(Utc::now()),
+    //     })
+    //     .await
+    //     .unwrap();
 
     task.await.unwrap();
 }

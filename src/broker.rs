@@ -47,8 +47,10 @@ impl<B: BackendManager> Monitor<B> {
 pub struct Broker<B> {
     backend: Arc<B>,
     poll_interval: u64,
+    task_timeout_secs: u64,
     active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
     tasks: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
+    parallelism_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,15 +69,24 @@ impl<B: BackendManager> Broker<B> {
     }
 }
 
+pub struct Options {
+    pub poll_interval: u64,
+    pub task_timeout_secs: u64,
+    pub max_parallel_tasks: Option<usize>,
+}
+
 impl<B: Backend + Send + Sync + 'static> Broker<B> {
     pub fn new(
         backend: Arc<B>,
-        poll_interval: u64,
+        options: &Options,
         handlers: &[Arc<dyn Task + Send + Sync>],
     ) -> Self {
+        let max_parallel_tasks = options.max_parallel_tasks.unwrap_or(0);
+
         Self {
             backend,
-            poll_interval,
+            poll_interval: options.poll_interval,
+            task_timeout_secs: options.task_timeout_secs,
             active_tasks: Default::default(),
             tasks: Arc::new(
                 handlers
@@ -83,6 +94,11 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                     .map(|t| (t.id().to_string(), t.clone()))
                     .collect(),
             ),
+            parallelism_semaphore: if max_parallel_tasks > 0 {
+                Some(Arc::new(tokio::sync::Semaphore::new(max_parallel_tasks)))
+            } else {
+                None
+            },
         }
     }
 
@@ -92,9 +108,11 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
 
     async fn _start(
         backend: Arc<B>,
+        parallelism_semaphore: Option<Arc<tokio::sync::Semaphore>>,
         active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
         handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
         poll_interval: u64,
+        task_timeout_secs: u64,
     ) {
         let data = backend.data();
         tracing::info!("starting broker worker loop");
@@ -200,14 +218,54 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                     let data = Arc::clone(&data);
                     let id = id.clone();
                     let backend = backend.clone();
+                    let sem = parallelism_semaphore.clone();
 
                     let active_work_request = work_request.and_started_at(Utc::now());
                     let handle = tokio::task::spawn(async move {
+                        let _permit = if let Some(sem) = sem.as_ref() {
+                            let s = match sem.acquire().await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::error!(error=%e, "Failed to acquire semaphore");
+                                    return;
+                                }
+                            };
+                            Some(s)
+                        } else {
+                            None
+                        };
+
                         rx.await.unwrap();
                         let action = work_request.action.clone();
 
                         tracing::debug!(id = %id, "Starting task");
-                        let result = handler.run(&data, work_request).await;
+                        let result = tokio::select! {
+                            result = handler.run(&data, work_request) => {
+                                result
+                            },
+                            _ = sleep(Duration::from_secs(task_timeout_secs)) => {
+                                tracing::error!(id = %id, "Task timed out");
+
+                                let mut timeout = 1u64;
+                                loop {
+                                    match backend.mark_attempted(&id).await {
+                                        Ok(_) => {
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(error=%e, id=id, "Failed to mark attempted; retrying in {} seconds", timeout);
+                                            tokio::time::sleep(
+                                                tokio::time::Duration::from_secs(timeout),
+                                            )
+                                            .await;
+                                            timeout *= 2;
+                                        }
+                                    }
+                                }
+                                return;
+                            }
+                        };
+
                         let mut timeout = 1u64;
                         match result {
                             Ok(_) => {
@@ -286,9 +344,11 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
     pub fn start_workers(&self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(Self::_start(
             self.backend.clone(),
+            self.parallelism_semaphore.clone(),
             self.active_tasks.clone(),
             self.tasks.clone(),
             self.poll_interval,
+            self.task_timeout_secs,
         ))
     }
 }
