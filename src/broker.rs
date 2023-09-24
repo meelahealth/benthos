@@ -24,16 +24,6 @@ impl<B: BackendManager> Monitor<B> {
         self.backend.statistics().await
     }
 
-    pub async fn active_tasks(&self) -> Vec<WorkRequest> {
-        let mut active_tasks: Vec<WorkRequest> = {
-            let x = self.active_tasks.read().await;
-            x.values().map(|task| task.request.clone()).collect()
-        };
-
-        active_tasks.sort_by(|a, b| a.started_at.cmp(&b.started_at));
-        active_tasks
-    }
-
     pub async fn work_requests(
         &self,
         filter: WorkRequestFilter,
@@ -102,10 +92,20 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
         }
     }
 
-    pub async fn add_work(&self, work: NewWorkRequest) -> Result<(), B::Error> {
+    pub async fn add_work(&self, work: NewWorkRequest) -> Result<String, B::Error> {
         self.backend.add_work_request(work).await
     }
 
+    pub async fn active_tasks(&self) -> Vec<WorkRequest> {
+        let mut active_tasks: Vec<WorkRequest> = {
+            let x = self.active_tasks.read().await;
+            x.values().map(|task| task.request.clone()).collect()
+        };
+
+        active_tasks.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+        active_tasks
+    }
+    
     async fn _start(
         backend: Arc<B>,
         parallelism_semaphore: Option<Arc<tokio::sync::Semaphore>>,
@@ -130,7 +130,8 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
             let repeating_work_requests = repeating_tasks
                 .iter_mut()
                 .filter_map(|(id, sched)| {
-                    while sched.peek().map(|t| t < &Utc::now()).unwrap_or_default() {
+                    let now = Utc::now();
+                    while sched.peek().map(|t| t < &now).unwrap_or(false) {
                         sched.next();
                     }
 
@@ -146,7 +147,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 "{:?}",
                 repeating_work_requests
                     .iter()
-                    .map(|(id, _)| id)
+                    .map(|(id, x)| (id, x))
                     .collect::<Vec<_>>()
             );
 
@@ -198,15 +199,19 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 }
 
                 let work_request = match backend.work_request_with_id(&id).await {
-                    Ok(v) => v,
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        tracing::error!(id = id, "No work request found");
+                        continue;
+                    }
                     Err(e) => {
-                        tracing::error!(error=%e, id=id, "No work request found for id");
+                        tracing::error!(error=%e, id=id, "An error occurred while polling for work request");
                         continue;
                     }
                 };
 
                 let Some(handler) = handlers.get(&work_request.action).map(Arc::clone) else {
-                    tracing::error!(action=work_request.action, "No handler found");
+                    tracing::error!(action = work_request.action, "No handler found");
                     continue;
                 };
 
@@ -337,6 +342,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 tx.send(()).unwrap();
             }
 
+            tracing::debug!("Sleeping for poll interval ({poll_interval}s)");
             sleep(Duration::from_secs(poll_interval)).await;
         }
     }

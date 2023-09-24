@@ -20,7 +20,7 @@ pub trait Backend {
     async fn work_request_with_id<S: AsRef<str> + Send>(
         &self,
         id: S,
-    ) -> Result<WorkRequest, Self::Error>;
+    ) -> Result<Option<WorkRequest>, Self::Error>;
 
     /// Returns a set of work requests for the given identifiers.
     async fn work_request_with_ids<S: AsRef<str> + Send + Sync>(
@@ -37,8 +37,8 @@ pub trait Backend {
     /// Marks a work item as failed. Will increment attempts by one.
     async fn mark_failed(&self, id: &str) -> Result<(), Self::Error>;
 
-    /// Queues a new work request.
-    async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<(), Self::Error>;
+    /// Queues a new work request. Returns the identifier.
+    async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<String, Self::Error>;
 
     /// Check if work request with given action and date already exists.
     async fn has_work_request(

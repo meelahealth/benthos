@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::typemap::TypeMap;
+use crate::{broker::NewWorkRequest, typemap::TypeMap};
 
 #[derive(Debug)]
 pub enum Error {
@@ -36,7 +36,22 @@ pub struct WorkRequest {
 }
 
 impl WorkRequest {
-    pub(crate) fn and_started_at(&self, started_at: DateTime<Utc>) -> WorkRequest {
+    pub fn new(id: String, wr: NewWorkRequest) -> Self {
+        Self {
+            id,
+            action: wr.action,
+            data: wr.data,
+            attempts: 0,
+            created_at: Utc::now(),
+            last_attempted_at: None,
+            not_before: wr.not_before,
+            succeeded_at: None,
+            failed_at: None,
+            started_at: None,
+        }
+    }
+
+    pub fn and_started_at(&self, started_at: DateTime<Utc>) -> WorkRequest {
         let mut x = self.clone();
         x.started_at = Some(started_at);
         x
