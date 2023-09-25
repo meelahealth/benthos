@@ -1,6 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    sync::Arc,
+    time::Duration,
+};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
@@ -16,7 +21,6 @@ struct ActiveTask {
 
 pub struct Monitor<B> {
     backend: Arc<B>,
-    active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
 }
 
 impl<B: BackendManager> Monitor<B> {
@@ -34,8 +38,9 @@ impl<B: BackendManager> Monitor<B> {
 }
 
 #[derive(Clone)]
-pub struct Broker<B> {
+pub struct Broker<B, Tz: TimeZone> {
     backend: Arc<B>,
+    timezone: Tz,
     poll_interval: u64,
     task_timeout_secs: u64,
     active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
@@ -50,31 +55,37 @@ pub struct NewWorkRequest {
     pub not_before: Option<DateTime<Utc>>,
 }
 
-impl<B: BackendManager> Broker<B> {
+impl<B: BackendManager, Tz: TimeZone> Broker<B, Tz> {
     pub fn monitor(&self) -> Monitor<B> {
         Monitor {
             backend: self.backend.clone(),
-            active_tasks: self.active_tasks.clone(),
         }
     }
 }
 
-pub struct Options {
+pub struct Options<Tz: TimeZone> {
     pub poll_interval: u64,
     pub task_timeout_secs: u64,
     pub max_parallel_tasks: Option<usize>,
+    pub timezone: Tz,
 }
 
-impl<B: Backend + Send + Sync + 'static> Broker<B> {
+impl<B, Tz> Broker<B, Tz>
+where
+    B: Backend + Send + Sync + 'static,
+    Tz: TimeZone + Copy + Send + Sync + Display + Debug + 'static,
+    Tz::Offset: Send + Sync + Display + Debug + 'static,
+{
     pub fn new(
         backend: Arc<B>,
-        options: &Options,
+        options: &Options<Tz>,
         handlers: &[Arc<dyn Task + Send + Sync>],
     ) -> Self {
         let max_parallel_tasks = options.max_parallel_tasks.unwrap_or(0);
 
         Self {
             backend,
+            timezone: options.timezone,
             poll_interval: options.poll_interval,
             task_timeout_secs: options.task_timeout_secs,
             active_tasks: Default::default(),
@@ -105,7 +116,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
         active_tasks.sort_by(|a, b| a.started_at.cmp(&b.started_at));
         active_tasks
     }
-    
+
     async fn _start(
         backend: Arc<B>,
         parallelism_semaphore: Option<Arc<tokio::sync::Semaphore>>,
@@ -113,6 +124,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
         handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
         poll_interval: u64,
         task_timeout_secs: u64,
+        tz: Tz,
     ) {
         let data = backend.data();
         tracing::info!("starting broker worker loop");
@@ -121,7 +133,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
             .values()
             .filter_map(|x| {
                 x.repetition_rule()
-                    .map(|r| (x.id(), r.upcoming_owned(Utc).peekable()))
+                    .map(|r| (x.id(), r.upcoming_owned(tz).peekable()))
             })
             .collect::<HashMap<_, _>>();
 
@@ -152,7 +164,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
             );
 
             for (id, next_date) in repeating_work_requests {
-                let has_job = match backend.has_work_request(id, *next_date).await {
+                let has_job = match backend.has_work_request(id, next_date.clone()).await {
                     Ok(v) => v,
                     Err(e) => {
                         tracing::error!(error=%e, id=id, "Error while polling for repeating work request");
@@ -167,7 +179,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                         .add_work_request(NewWorkRequest {
                             action: task.id().to_string(),
                             data: task.generate_data(&data).await,
-                            not_before: Some(*next_date),
+                            not_before: Some(next_date.with_timezone(&Utc)),
                         })
                         .await;
 
@@ -355,6 +367,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
             self.tasks.clone(),
             self.poll_interval,
             self.task_timeout_secs,
+            self.timezone,
         ))
     }
 }

@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use std::{
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{broker::NewWorkRequest, task::WorkRequest, TypeMap};
@@ -41,11 +44,14 @@ pub trait Backend {
     async fn add_work_request(&self, work_request: NewWorkRequest) -> Result<String, Self::Error>;
 
     /// Check if work request with given action and date already exists.
-    async fn has_work_request(
+    async fn has_work_request<Tz>(
         &self,
         action: &str,
-        next_date: DateTime<Utc>,
-    ) -> Result<bool, Self::Error>;
+        next_date: DateTime<Tz>,
+    ) -> Result<bool, Self::Error>
+    where
+        Tz: TimeZone + Send + Sync + Display + Debug + 'static,
+        Tz::Offset: Send + Sync + Display + Debug + 'static;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -27,18 +27,25 @@ async fn run() {
                 poll_interval: 10,
                 task_timeout_secs: 60,
                 max_parallel_tasks: Some(5),
+                timezone: chrono_tz::Europe::Stockholm,
             },
-            &[Arc::new(PeriodicPrintingTask) as _, Arc::new(PrintTask) as _],
+            &[
+                Arc::new(PeriodicPrintingTask) as _,
+                Arc::new(PrintTask) as _,
+            ],
         )
     });
 
     let handle = broker.start_workers();
 
-    broker.add_work(NewWorkRequest {
-        action: "print_task".into(),
-        data: serde_json::Value::String("test string".into()),
-        not_before: Some(Utc::now() + chrono::Duration::seconds(30)),
-    }).await.unwrap();
+    broker
+        .add_work(NewWorkRequest {
+            action: "print_task".into(),
+            data: serde_json::Value::String("test string".into()),
+            not_before: Some(Utc::now() + chrono::Duration::seconds(30)),
+        })
+        .await
+        .unwrap();
 
     handle.await.unwrap();
 }
@@ -56,7 +63,11 @@ impl Task for PrintTask {
     async fn run(&self, data: &TypeMap, request: WorkRequest) -> Result<(), benthos::task::Error> {
         println!("Printed: {}", request.data.as_str().unwrap());
 
-        let broker = data.get::<Weak<Broker<MemoryEngine>>>().unwrap().upgrade().unwrap();
+        let broker = data
+            .get::<Weak<Broker<MemoryEngine, Utc>>>()
+            .unwrap()
+            .upgrade()
+            .unwrap();
         println!("{:#?}", broker.active_tasks().await);
 
         Ok(())

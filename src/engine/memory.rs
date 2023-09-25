@@ -1,10 +1,11 @@
 use std::{
     collections::HashSet,
+    fmt::{Debug, Display},
     sync::{atomic::AtomicU64, Arc},
 };
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -21,7 +22,7 @@ impl std::error::Error for Error {}
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        write!(f, "Error")
     }
 }
 
@@ -61,9 +62,7 @@ impl Backend for MemoryEngine {
             .read()
             .await
             .iter()
-            .filter(|x| {
-                x.failed_at.is_none() && x.succeeded_at.is_none()
-            })
+            .filter(|x| x.failed_at.is_none() && x.succeeded_at.is_none())
             .filter(|x| match x.not_before {
                 Some(v) => v <= now,
                 None => true,
@@ -108,7 +107,7 @@ impl Backend for MemoryEngine {
 
     /// Marks an attempt was made.
     async fn mark_attempted(&self, id: &str) -> Result<(), Self::Error> {
-        tracing::trace!(id=id, "Marking attempted");
+        tracing::trace!(id = id, "Marking attempted");
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
@@ -119,7 +118,7 @@ impl Backend for MemoryEngine {
 
     /// Marks a work item as succeeded. Will increment attempts by one.
     async fn mark_succeeded(&self, id: &str) -> Result<(), Self::Error> {
-        tracing::trace!(id=id, "Marking succeeded");
+        tracing::trace!(id = id, "Marking succeeded");
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
@@ -131,7 +130,7 @@ impl Backend for MemoryEngine {
 
     /// Marks a work item as failed. Will increment attempts by one.
     async fn mark_failed(&self, id: &str) -> Result<(), Self::Error> {
-        tracing::trace!(id=id, "Marking failed");
+        tracing::trace!(id = id, "Marking failed");
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
@@ -152,17 +151,21 @@ impl Backend for MemoryEngine {
     }
 
     /// Check if work request with given action and date already exists.
-    async fn has_work_request(
+    async fn has_work_request<Tz: TimeZone>(
         &self,
         action: &str,
-        next_date: DateTime<Utc>,
-    ) -> Result<bool, Self::Error> {
+        next_date: DateTime<Tz>,
+    ) -> Result<bool, Self::Error>
+    where
+        Tz: TimeZone + Send + Sync + Display + Debug + 'static,
+        Tz::Offset: Send + Sync + Display + Debug + 'static,
+    {
         Ok(self
             .work_requests
             .read()
             .await
             .iter()
-            .any(|x| x.action == action && x.not_before == Some(next_date)))
+            .any(|x| x.action == action && x.not_before == Some(next_date.with_timezone(&Utc))))
     }
 }
 
@@ -170,7 +173,15 @@ impl Backend for MemoryEngine {
 impl BackendManager for MemoryEngine {
     /// Returns statistics about the queue.
     async fn statistics(&self) -> Result<Statistics, Self::Error> {
-        Ok(Statistics { processed: 0, failed: 0, busy: 0, enqueued: 0, retries: 0, scheduled: 0, dead: 0 })
+        Ok(Statistics {
+            processed: 0,
+            failed: 0,
+            busy: 0,
+            enqueued: 0,
+            retries: 0,
+            scheduled: 0,
+            dead: 0,
+        })
     }
 
     /// Returns work requests within the provided filter.
