@@ -52,7 +52,7 @@ impl Backend for MemoryEngine {
 
     /// Returns a list of work request identifiers that are ready to be processed.
     async fn poll(&self) -> Result<Vec<String>, Self::Error> {
-        tracing::debug!("Polling");
+        tracing::trace!("Polling");
         tracing::trace!("{:#?}", self.work_requests.read().await);
 
         let now = chrono::Utc::now();
@@ -71,7 +71,7 @@ impl Backend for MemoryEngine {
             .map(|x| x.id.clone())
             .collect::<Vec<_>>();
 
-        tracing::debug!("Polled: {}", results.len());
+        tracing::trace!("Polled: {}", results.len());
         Ok(results)
     }
 
@@ -108,7 +108,7 @@ impl Backend for MemoryEngine {
 
     /// Marks an attempt was made.
     async fn mark_attempted(&self, id: &str) -> Result<(), Self::Error> {
-        tracing::debug!(id=id, "Marking attempted");
+        tracing::trace!(id=id, "Marking attempted");
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
@@ -119,7 +119,7 @@ impl Backend for MemoryEngine {
 
     /// Marks a work item as succeeded. Will increment attempts by one.
     async fn mark_succeeded(&self, id: &str) -> Result<(), Self::Error> {
-        tracing::debug!(id=id, "Marking succeeded");
+        tracing::trace!(id=id, "Marking succeeded");
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
@@ -131,7 +131,7 @@ impl Backend for MemoryEngine {
 
     /// Marks a work item as failed. Will increment attempts by one.
     async fn mark_failed(&self, id: &str) -> Result<(), Self::Error> {
-        tracing::debug!(id=id, "Marking failed");
+        tracing::trace!(id=id, "Marking failed");
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
@@ -176,7 +176,7 @@ impl BackendManager for MemoryEngine {
     /// Returns work requests within the provided filter.
     async fn work_requests(
         &self,
-        filter: WorkRequestFilter,
+        _filter: WorkRequestFilter,
     ) -> Result<Vec<WorkRequest>, Self::Error> {
         Ok(vec![])
     }

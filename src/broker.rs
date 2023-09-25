@@ -342,7 +342,7 @@ impl<B: Backend + Send + Sync + 'static> Broker<B> {
                 tx.send(()).unwrap();
             }
 
-            tracing::debug!("Sleeping for poll interval ({poll_interval}s)");
+            tracing::trace!("Sleeping for poll interval ({poll_interval}s)");
             sleep(Duration::from_secs(poll_interval)).await;
         }
     }
