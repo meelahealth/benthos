@@ -165,7 +165,14 @@ where
 
             for (id, next_date) in repeating_work_requests {
                 let has_job = match backend.has_work_request(id, next_date.clone()).await {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        if v {
+                            tracing::trace!("Already has job with id: {}", id);
+                        } else {
+                            tracing::trace!("Creating new job for id: {}", id);
+                        }
+                        v
+                    }
                     Err(e) => {
                         tracing::error!(error=%e, id=id, "Error while polling for repeating work request");
                         continue;
