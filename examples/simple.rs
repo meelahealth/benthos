@@ -19,7 +19,7 @@ async fn run() {
     // This is how you can pass the broker to tasks themselves.
     let broker = Arc::new_cyclic(|weak| {
         let mut data = TypeMap::new();
-        data.insert(weak.clone());
+        data.insert(weak.to_owned());
 
         Broker::new(
             Arc::new(MemoryEngine::new(data)),
@@ -27,7 +27,7 @@ async fn run() {
                 poll_interval: 10,
                 task_timeout_secs: 60,
                 max_parallel_tasks: Some(5),
-                timezone: chrono_tz::Europe::Stockholm,
+                timezone: Utc,
             },
             &[
                 Arc::new(PeriodicPrintingTask) as _,
@@ -42,7 +42,8 @@ async fn run() {
         .add_work(NewWorkRequest {
             action: "print_task".into(),
             data: serde_json::Value::String("test string".into()),
-            not_before: Some(Utc::now() + chrono::Duration::seconds(30)),
+            scheduled_at: Some(Utc::now() + chrono::Duration::seconds(2)),
+            expires_at: None,
         })
         .await
         .unwrap();

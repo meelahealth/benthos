@@ -52,7 +52,8 @@ pub struct Broker<B, Tz: TimeZone> {
 pub struct NewWorkRequest {
     pub action: String,
     pub data: serde_json::Value,
-    pub not_before: Option<DateTime<Utc>>,
+    pub scheduled_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 impl<B: BackendManager, Tz: TimeZone> Broker<B, Tz> {
@@ -113,7 +114,7 @@ where
             x.values().map(|task| task.request.clone()).collect()
         };
 
-        active_tasks.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+        active_tasks.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
         active_tasks
     }
 
@@ -186,7 +187,8 @@ where
                         .add_work_request(NewWorkRequest {
                             action: task.id().to_string(),
                             data: task.generate_data(&data).await,
-                            not_before: Some(next_date.with_timezone(&Utc)),
+                            scheduled_at: Some(next_date.with_timezone(&Utc)),
+                            expires_at: Some(next_date.with_timezone(&Utc) + chrono::Duration::seconds(30)),
                         })
                         .await;
 
@@ -233,8 +235,32 @@ where
                     tracing::error!(action = work_request.action, "No handler found");
                     continue;
                 };
-
                 drop(active_tasks);
+
+                if let Some(expires_at) = work_request.expires_at {
+                    if expires_at < Utc::now() {
+                        tracing::trace!(action = work_request.action, "Work request has expired");
+
+                        let mut timeout = 1u64;
+                        loop {
+                            match backend.mark_expired(&id).await {
+                                Ok(_) => {
+                                    break;
+                                }
+                                Err(e) => {
+                                    tracing::error!(error=%e, id=id, "Failed to mark expired; retrying in {} seconds", timeout);
+                                    tokio::time::sleep(
+                                        tokio::time::Duration::from_secs(timeout),
+                                    )
+                                    .await;
+                                    timeout *= 2;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                }
+
                 let (tx, rx) = tokio::sync::oneshot::channel();
 
                 let task = {

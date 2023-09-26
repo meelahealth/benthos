@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use crate::{
     backend::{Backend, BackendManager, Statistics, WorkRequestFilter},
     broker::NewWorkRequest,
-    task::WorkRequest,
+    task::{WorkRequest, State},
     TypeMap,
 };
 
@@ -62,8 +62,8 @@ impl Backend for MemoryEngine {
             .read()
             .await
             .iter()
-            .filter(|x| x.failed_at.is_none() && x.succeeded_at.is_none())
-            .filter(|x| match x.not_before {
+            .filter(|x| !x.state.is_final())
+            .filter(|x| match x.scheduled_at {
                 Some(v) => v <= now,
                 None => true,
             })
@@ -111,7 +111,8 @@ impl Backend for MemoryEngine {
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
-            x.last_attempted_at = Some(chrono::Utc::now());
+            x.state = State::Attempted;
+            x.updated_at = chrono::Utc::now();
         }
         Ok(())
     }
@@ -122,8 +123,8 @@ impl Backend for MemoryEngine {
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
-            x.last_attempted_at = Some(chrono::Utc::now());
-            x.succeeded_at = Some(chrono::Utc::now());
+            x.state = State::Succeeded;
+            x.updated_at = chrono::Utc::now();
         }
         Ok(())
     }
@@ -134,8 +135,18 @@ impl Backend for MemoryEngine {
         let mut work_requests = self.work_requests.write().await;
         if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
             x.attempts += 1;
-            x.last_attempted_at = Some(chrono::Utc::now());
-            x.failed_at = Some(chrono::Utc::now());
+            x.state = State::Failed;
+            x.updated_at = chrono::Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn mark_expired(&self, id: &str) -> Result<(), Self::Error> {
+        tracing::trace!(id = id, "Marking expired");
+        let mut work_requests = self.work_requests.write().await;
+        if let Some(x) = work_requests.iter_mut().find(|x| x.id == id) {
+            x.state = State::Expired;
+            x.updated_at = chrono::Utc::now();
         }
         Ok(())
     }
@@ -165,7 +176,7 @@ impl Backend for MemoryEngine {
             .read()
             .await
             .iter()
-            .any(|x| x.action == action && x.not_before == Some(next_date.with_timezone(&Utc))))
+            .any(|x| x.action == action && x.scheduled_at == Some(next_date.with_timezone(&Utc))))
     }
 }
 

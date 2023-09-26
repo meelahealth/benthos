@@ -21,39 +21,59 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum State {
+    Pending,
+    Started,
+    Attempted,
+    Failed,
+    Expired,
+    Succeeded,
+}
+
+impl State {
+    pub fn is_final(&self) -> bool {
+        match self {
+            Self::Failed | Self::Succeeded | Self::Expired => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkRequest {
     pub id: String,
     pub action: String,
+    pub state: State,
     pub data: serde_json::Value,
     pub attempts: usize,
+    pub scheduled_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    pub last_attempted_at: Option<DateTime<Utc>>,
-    pub not_before: Option<DateTime<Utc>>,
-    pub succeeded_at: Option<DateTime<Utc>>,
-    pub failed_at: Option<DateTime<Utc>>,
-    pub started_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl WorkRequest {
     pub fn new(id: String, wr: NewWorkRequest) -> Self {
+        let now = Utc::now();
         Self {
             id,
             action: wr.action,
             data: wr.data,
+            state: State::Pending,
             attempts: 0,
-            created_at: Utc::now(),
-            last_attempted_at: None,
-            not_before: wr.not_before,
-            succeeded_at: None,
-            failed_at: None,
-            started_at: None,
+            scheduled_at: wr.scheduled_at,
+            expires_at: wr.expires_at,
+            created_at: now,
+            updated_at: now,
         }
     }
 
     pub fn and_started_at(&self, started_at: DateTime<Utc>) -> WorkRequest {
         let mut x = self.clone();
-        x.started_at = Some(started_at);
+        x.state = State::Started;
+        x.updated_at = started_at;
         x
     }
 }
