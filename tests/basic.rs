@@ -62,7 +62,7 @@ impl Backend for TestBackend {
         Ok(WorkRequest {
             id: id.as_ref().to_string(),
             action: "test".to_string(),
-            data: serde_json::json!({ "test": true }),
+            data: bson::bson!({ "test": true }),
             attempts: 0,
             created_at: Utc::now(),
             last_attempted_at: None,
@@ -82,14 +82,10 @@ impl Backend for TestBackend {
             .map(|id| WorkRequest {
                 id: id.as_ref().to_string(),
                 action: "test".to_string(),
-                data: serde_json::json!({ "test": true }),
+                data: bson::bson!({ "test": true }),
                 attempts: 0,
                 created_at: Utc::now(),
-                last_attempted_at: None,
                 scheduled_at: None,
-                started_at: None,
-                succeeded_at: None,
-                failed_at: None,
             })
             .collect())
     }
@@ -148,6 +144,7 @@ async fn smoke() {
             poll_interval: 1,
             task_timeout_secs: 1,
             max_parallel_tasks: Some(2),
+            timezone: chrono::Utc,
         },
         &[Arc::new(TestHandler) as _],
     );

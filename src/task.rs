@@ -46,7 +46,7 @@ pub struct WorkRequest {
     pub id: String,
     pub action: String,
     pub state: State,
-    pub data: serde_json::Value,
+    pub data: bson::Bson,
     pub attempts: usize,
     pub scheduled_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -92,7 +92,7 @@ pub trait Task {
     }
 
     /// Generates the data for the pending task to be run.
-    async fn generate_data(&self, _data: &TypeMap) -> serde_json::Value {
-        serde_json::json!({})
+    async fn generate_data(&self, _data: &TypeMap) -> bson::Bson {
+        bson::Bson::Document(bson::Document::new())
     }
 }

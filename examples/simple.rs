@@ -41,7 +41,7 @@ async fn run() {
     broker
         .add_work(NewWorkRequest {
             action: "print_task".into(),
-            data: serde_json::Value::String("test string".into()),
+            data: bson::Bson::String("test string".into()),
             scheduled_at: Some(Utc::now() + chrono::Duration::seconds(2)),
             expires_at: None,
         })
@@ -96,7 +96,7 @@ impl Task for PeriodicPrintingTask {
     }
 
     /// Generates the data for the pending task to be run.
-    async fn generate_data(&self, data: &TypeMap) -> serde_json::Value {
-        serde_json::json!({})
+    async fn generate_data(&self, data: &TypeMap) -> bson::Bson {
+        bson::Bson::Document(bson::Document::new())
     }
 }

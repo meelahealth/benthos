@@ -51,7 +51,7 @@ pub struct Broker<B, Tz: TimeZone> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewWorkRequest {
     pub action: String,
-    pub data: serde_json::Value,
+    pub data: bson::Bson,
     pub scheduled_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
 }
