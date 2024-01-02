@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use crate::{
     backend::{Backend, BackendManager, Statistics, WorkRequestFilter},
     broker::NewWorkRequest,
-    task::{WorkRequest, State},
+    task::{State, WorkRequest},
     TypeMap,
 };
 

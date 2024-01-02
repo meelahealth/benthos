@@ -188,7 +188,9 @@ where
                             action: task.id().to_string(),
                             data: task.generate_data(&data).await,
                             scheduled_at: Some(next_date.with_timezone(&Utc)),
-                            expires_at: Some(next_date.with_timezone(&Utc) + chrono::Duration::seconds(30)),
+                            expires_at: Some(
+                                next_date.with_timezone(&Utc) + chrono::Duration::seconds(30),
+                            ),
                         })
                         .await;
 
@@ -233,6 +235,12 @@ where
 
                 let Some(handler) = handlers.get(&work_request.action).map(Arc::clone) else {
                     tracing::error!(action = work_request.action, "No handler found");
+                    match backend.mark_failed(&id).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::error!(error=%e, id=id, "Failed to mark work request as failed");
+                        }
+                    }
                     continue;
                 };
                 drop(active_tasks);
@@ -249,10 +257,8 @@ where
                                 }
                                 Err(e) => {
                                     tracing::error!(error=%e, id=id, "Failed to mark expired; retrying in {} seconds", timeout);
-                                    tokio::time::sleep(
-                                        tokio::time::Duration::from_secs(timeout),
-                                    )
-                                    .await;
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(timeout))
+                                        .await;
                                     timeout *= 2;
                                 }
                             }
