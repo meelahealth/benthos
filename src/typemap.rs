@@ -1,15 +1,15 @@
 use std::{
     any::{Any, TypeId},
-    ops::Deref,
+    ops::Deref, sync::Arc,
 };
 
 use fnv::FnvHashMap;
 
-#[derive(Default)]
-pub struct TypeMap(FnvHashMap<TypeId, Box<dyn Any + Sync + Send>>);
+#[derive(Default, Clone)]
+pub struct TypeMap(FnvHashMap<TypeId, Arc<dyn Any + Sync + Send>>);
 
 impl Deref for TypeMap {
-    type Target = FnvHashMap<TypeId, Box<dyn Any + Sync + Send>>;
+    type Target = FnvHashMap<TypeId, Arc<dyn Any + Sync + Send>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -22,7 +22,7 @@ impl TypeMap {
     }
 
     pub fn insert<D: Any + Send + Sync>(&mut self, data: D) {
-        self.0.insert(TypeId::of::<D>(), Box::new(data));
+        self.0.insert(TypeId::of::<D>(), Arc::new(data));
     }
 
     pub fn get<D: Any + Send + Sync>(&self) -> Option<&D> {
