@@ -127,7 +127,7 @@ where
         task_timeout_secs: u64,
         tz: Tz,
     ) {
-        let data = backend.data();
+        let data = backend.data().await;
         tracing::info!("starting broker worker loop");
 
         let mut repeating_tasks = handlers

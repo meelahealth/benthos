@@ -14,7 +14,7 @@ pub trait Backend {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Shared data for all tasks.
-    fn data(&self) -> Arc<TypeMap>;
+    async fn data(&self) -> Arc<TypeMap>;
 
     /// Returns a list of work request identifiers that are ready to be processed.
     async fn poll(&self) -> Result<Vec<String>, Self::Error>;

@@ -47,7 +47,7 @@ impl Backend for MemoryEngine {
     type Error = Error;
 
     /// Shared data for all tasks.
-    fn data(&self) -> Arc<TypeMap> {
+    async fn data(&self) -> Arc<TypeMap> {
         self.data.clone()
     }
 
