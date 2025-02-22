@@ -294,7 +294,7 @@ where
                         rx.await.unwrap();
                         let action = work_request.action.clone();
 
-                        tracing::debug!(id = %id, "Starting task");
+                        tracing::debug!(id = %id, action = %action, "Starting task");
                         let result = tokio::select! {
                             result = handler.run(&data, work_request) => {
                                 result
@@ -325,7 +325,7 @@ where
                         let mut timeout = 1u64;
                         match result {
                             Ok(_) => {
-                                tracing::debug!(id = %id, "Finished task");
+                                tracing::debug!(id = %id, action = %action, "Finished task");
                                 loop {
                                     match backend.mark_succeeded(&id).await {
                                         Ok(_) => {
