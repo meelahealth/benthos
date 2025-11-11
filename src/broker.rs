@@ -37,7 +37,6 @@ impl<B: BackendManager> Monitor<B> {
     }
 }
 
-#[derive(Clone)]
 pub struct Broker<B, Tz: TimeZone> {
     backend: Arc<B>,
     timezone: Tz,
@@ -46,6 +45,20 @@ pub struct Broker<B, Tz: TimeZone> {
     active_tasks: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
     tasks: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
     parallelism_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+impl<B, Tz: TimeZone + Copy> Clone for Broker<B, Tz> {
+    fn clone(&self) -> Self {
+        Self {
+            backend: Arc::clone(&self.backend),
+            timezone: self.timezone,
+            poll_interval: self.poll_interval,
+            task_timeout_secs: self.task_timeout_secs,
+            active_tasks: Arc::clone(&self.active_tasks),
+            tasks: Arc::clone(&self.tasks),
+            parallelism_semaphore: self.parallelism_semaphore.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,283 +131,365 @@ where
         active_tasks
     }
 
-    async fn _start(
-        backend: Arc<B>,
-        parallelism_semaphore: Option<Arc<tokio::sync::Semaphore>>,
-        active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
-        handlers: Arc<HashMap<String, Arc<dyn Task + Send + Sync>>>,
-        poll_interval: u64,
-        task_timeout_secs: u64,
-        tz: Tz,
-    ) {
-        let data = backend.data().await;
-        tracing::info!("starting broker worker loop");
+    /// Process one iteration of the worker loop.
+    ///
+    /// This polls the backend for ready work, processes repeating tasks,
+    /// and executes all available work requests. Returns the number of
+    /// work requests that were started.
+    ///
+    /// This is primarily useful for testing, where you can call `tick()`
+    /// to execute tasks synchronously without starting the background worker.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // In a test:
+    /// let broker = Broker::new(...);
+    ///
+    /// // Queue some work
+    /// broker.add_work(work_request).await?;
+    ///
+    /// // Process it immediately
+    /// let count = broker.tick().await?;
+    /// assert_eq!(count, 1);
+    /// ```
+    pub async fn tick(&self) -> Result<usize, B::Error> {
+        let data = self.backend.data().await;
 
-        let mut repeating_tasks = handlers
-            .values()
-            .filter_map(|x| {
-                x.repetition_rule()
-                    .map(|r| (x.id(), r.upcoming_owned(tz).peekable()))
-            })
-            .collect::<HashMap<_, _>>();
+        // Handle repeating tasks
+        self.poll_repeating_tasks(&data).await?;
 
-        loop {
-            tracing::trace!("polling repeating tasks");
-            let repeating_work_requests = repeating_tasks
-                .iter_mut()
-                .filter_map(|(id, sched)| {
-                    let now = Utc::now();
-                    while sched.peek().map(|t| t < &now).unwrap_or(false) {
-                        sched.next();
-                    }
+        // Poll for ready work
+        tracing::trace!("Polling for work requests");
+        let new_ids = self.backend.poll().await?;
+        tracing::trace!(count = new_ids.len(), "Found work requests");
 
-                    if let Some(dt) = sched.peek() {
-                        return Some((*id, dt));
-                    }
+        let mut started_count = 0;
 
-                    None
-                })
-                .collect::<Vec<_>>();
-
-            tracing::trace!(
-                "{:?}",
-                repeating_work_requests
-                    .iter()
-                    .map(|(id, x)| (id, x))
-                    .collect::<Vec<_>>()
-            );
-
-            for (id, next_date) in repeating_work_requests {
-                let has_job = match backend.has_work_request(id, next_date.clone()).await {
-                    Ok(v) => {
-                        if v {
-                            tracing::trace!(id, "Already has job with id: {}", id);
-                        } else {
-                            tracing::trace!(id, "Creating new job for id: {}", id);
-                        }
-                        v
-                    }
-                    Err(e) => {
-                        tracing::error!(id, error=%e, "Error while polling for repeating work request");
-                        continue;
-                    }
-                };
-
-                if !has_job {
-                    let task = handlers.get(id).unwrap();
-
-                    let work_request = backend
-                        .add_work_request(NewWorkRequest {
-                            action: task.id().to_string(),
-                            data: task.generate_data(&data).await,
-                            scheduled_at: Some(next_date.with_timezone(&Utc)),
-                            expires_at: Some(
-                                next_date.with_timezone(&Utc) + chrono::Duration::seconds(30),
-                            ),
-                        })
-                        .await;
-
-                    match work_request {
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::error!(id=task.id(), action=task.id().to_string(), error=%e, "Failed to add work request");
-                            continue;
-                        }
-                    }
+        for id in new_ids {
+            // Skip if already active
+            {
+                let active_tasks = self.active_tasks.read().await;
+                if active_tasks.contains_key(&id) {
+                    continue;
                 }
             }
 
-            tracing::trace!("Polling ids");
-            let new_ids = match backend.poll().await {
-                Ok(v) => v,
+            // Start processing this work request
+            let was_started = self.process_work_request(id, &data).await?;
+
+            if was_started {
+                started_count += 1;
+            }
+        }
+
+        Ok(started_count)
+    }
+
+    /// Poll for repeating tasks and enqueue them if needed.
+    ///
+    /// This checks all tasks with `repetition_rule()` and creates work requests
+    /// for any that are due but don't already have a queued job.
+    pub async fn poll_repeating_tasks(&self, data: &Arc<crate::TypeMap>) -> Result<(), B::Error> {
+        tracing::trace!("Polling repeating tasks");
+
+        // Build schedule for each repeating task
+        let mut repeating_tasks = self
+            .tasks
+            .values()
+            .filter_map(|x| {
+                x.repetition_rule()
+                    .map(|r| (x.id(), r.upcoming_owned(self.timezone).peekable()))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let repeating_work_requests = repeating_tasks
+            .iter_mut()
+            .filter_map(|(id, sched)| {
+                let now = Utc::now();
+                // Skip past times
+                while sched.peek().map(|t| t < &now).unwrap_or(false) {
+                    sched.next();
+                }
+
+                if let Some(dt) = sched.peek() {
+                    return Some((*id, dt));
+                }
+
+                None
+            })
+            .collect::<Vec<_>>();
+
+        tracing::trace!(
+            "{:?}",
+            repeating_work_requests
+                .iter()
+                .map(|(id, x)| (id, x))
+                .collect::<Vec<_>>()
+        );
+
+        for (id, next_date) in repeating_work_requests {
+            let has_job = match self.backend.has_work_request(id, next_date.clone()).await {
+                Ok(v) => {
+                    if v {
+                        tracing::trace!(id, "Already has job with id: {}", id);
+                    } else {
+                        tracing::trace!(id, "Creating new job for id: {}", id);
+                    }
+                    v
+                }
                 Err(e) => {
-                    tracing::error!(error=%e, "Failed to poll broker backend");
-                    sleep(Duration::from_secs(poll_interval)).await;
+                    tracing::error!(id, error=%e, "Error while polling for repeating work request");
                     continue;
                 }
             };
 
-            tracing::trace!(count = new_ids.len(), "New ids");
+            if !has_job {
+                let task = self.tasks.get(id).unwrap();
 
-            for id in new_ids {
-                let active_tasks = active_tasks_lock.read().await;
-                if active_tasks.contains_key(&id) {
-                    continue;
-                }
+                let work_request = self
+                    .backend
+                    .add_work_request(NewWorkRequest {
+                        action: task.id().to_string(),
+                        data: task.generate_data(&data).await,
+                        scheduled_at: Some(next_date.with_timezone(&Utc)),
+                        expires_at: Some(
+                            next_date.with_timezone(&Utc) + chrono::Duration::seconds(30),
+                        ),
+                    })
+                    .await;
 
-                let work_request = match backend.work_request_with_id(&id).await {
-                    Ok(Some(v)) => v,
-                    Ok(None) => {
-                        tracing::error!(id, "No work request found");
-                        continue;
-                    }
+                match work_request {
+                    Ok(_) => {}
                     Err(e) => {
-                        tracing::error!(id, error=%e, "An error occurred while polling for work request");
-                        continue;
-                    }
-                };
-
-                let action = work_request.action.clone();
-
-                let Some(handler) = handlers.get(&work_request.action).map(Arc::clone) else {
-                    tracing::error!(id, action, "No handler found");
-                    match backend.mark_failed(&id).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::error!(id, error=%e, "Failed to mark work request as failed");
-                        }
-                    }
-                    continue;
-                };
-                drop(active_tasks);
-
-                if let Some(expires_at) = work_request.expires_at {
-                    if expires_at < Utc::now() {
-                        tracing::trace!(id, action, "Work request has expired");
-
-                        let mut timeout = 1u64;
-
-                        loop {
-                            match backend.mark_expired(&id).await {
-                                Ok(_) => {
-                                    break;
-                                }
-                                Err(e) => {
-                                    tracing::error!(id, action, error=%e, "Failed to mark expired; retrying in {} seconds", timeout);
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(timeout))
-                                        .await;
-                                    timeout *= 2;
-                                }
-                            }
-                        }
+                        tracing::error!(id=task.id(), action=task.id().to_string(), error=%e, "Failed to add work request");
                         continue;
                     }
                 }
+            }
+        }
 
-                let (tx, rx) = tokio::sync::oneshot::channel();
+        Ok(())
+    }
 
-                let task = {
-                    let active_tasks_lock = Arc::clone(&active_tasks_lock);
-                    let data = Arc::clone(&data);
-                    let id = id.clone();
-                    let backend = backend.clone();
-                    let sem = parallelism_semaphore.clone();
+    /// Process a single work request by ID.
+    ///
+    /// This fetches the work request, validates it, and spawns a task to execute it.
+    /// Returns `true` if the work request was started, `false` if it was skipped
+    /// (e.g., already expired, no handler found, etc.).
+    ///
+    /// This is public to allow fine-grained control in tests.
+    pub async fn process_work_request(
+        &self,
+        id: String,
+        data: &Arc<crate::TypeMap>,
+    ) -> Result<bool, B::Error> {
+        let work_request = match self.backend.work_request_with_id(&id).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                tracing::error!(id, "No work request found");
+                return Ok(false);
+            }
+            Err(e) => {
+                tracing::error!(id, error=%e, "An error occurred while polling for work request");
+                return Err(e);
+            }
+        };
 
-                    let active_work_request = work_request.and_started_at(Utc::now());
-                    let action = active_work_request.action.clone();
-                    let handle = tokio::task::spawn(async move {
-                        let _permit = if let Some(sem) = sem.as_ref() {
-                            let s = match sem.acquire().await {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    tracing::error!(id, action, error=%e, "Failed to acquire semaphore");
-                                    return;
-                                }
-                            };
-                            Some(s)
-                        } else {
-                            None
-                        };
+        let action = work_request.action.clone();
 
-                        rx.await.unwrap();
+        let Some(handler) = self.tasks.get(&work_request.action).map(Arc::clone) else {
+            tracing::error!(id, action, "No handler found");
+            match self.backend.mark_failed(&id).await {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!(id, error=%e, "Failed to mark work request as failed");
+                }
+            }
+            return Ok(false);
+        };
 
-                        tracing::debug!(id, action, "Starting task");
-                        let result = tokio::select! {
-                            result = handler.run(&data, work_request) => {
-                                result
-                            },
-                            _ = sleep(Duration::from_secs(task_timeout_secs)) => {
-                                tracing::error!(id, action, "Task timed out");
+        // Check expiration
+        if let Some(expires_at) = work_request.expires_at {
+            if expires_at < Utc::now() {
+                tracing::trace!(id, action, "Work request has expired");
 
-                                let mut timeout = 1u64;
-                                loop {
-                                    match backend.mark_attempted(&id).await {
-                                        Ok(_) => {
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(id, action, error=%e, "Failed to mark attempted; retrying in {} seconds", timeout);
-                                            tokio::time::sleep(
-                                                tokio::time::Duration::from_secs(timeout),
-                                            )
-                                            .await;
-                                            timeout *= 2;
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                        };
+                let mut timeout = 1u64;
 
-                        let mut timeout = 1u64;
-                        match result {
-                            Ok(_) => {
-                                tracing::debug!(id, action, "Finished task");
-                                loop {
-                                    match backend.mark_succeeded(&id).await {
-                                        Ok(_) => {
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(id, action, error=%e, "Failed to mark succeeded; retrying in {} seconds", timeout);
-                                            tokio::time::sleep(tokio::time::Duration::from_secs(
-                                                timeout,
-                                            ))
-                                            .await;
-                                            timeout *= 2;
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => match e {
-                                Error::Retry => {
-                                    tracing::error!(id, action, error=%e, "Task being retried");
-                                    loop {
-                                        match backend.mark_attempted(&id).await {
-                                            Ok(_) => {
-                                                break;
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(id, action, error=%e, "Failed to mark attempted; retrying in {} seconds", timeout);
-                                                tokio::time::sleep(
-                                                    tokio::time::Duration::from_secs(timeout),
-                                                )
-                                                .await;
-                                                timeout *= 2;
-                                            }
-                                        }
-                                    }
-                                }
-                                Error::Fail => {
-                                    tracing::error!(id, action, error=%e, "Task failed");
-                                    loop {
-                                        match backend.mark_failed(&id).await {
-                                            Ok(_) => {
-                                                break;
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(id, action, error=%e, "Failed to mark failed; retrying in {} seconds", timeout);
-                                                tokio::time::sleep(
-                                                    tokio::time::Duration::from_secs(timeout),
-                                                )
-                                                .await;
-                                                timeout *= 2;
-                                            }
-                                        }
-                                    }
-                                }
-                            },
+                loop {
+                    match self.backend.mark_expired(&id).await {
+                        Ok(_) => {
+                            break;
                         }
-                        active_tasks_lock.write().await.remove(&id);
-                    });
-                    ActiveTask {
-                        _handle: handle,
-                        request: active_work_request,
+                        Err(e) => {
+                            tracing::error!(id, action, error=%e, "Failed to mark expired; retrying in {} seconds", timeout);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(timeout)).await;
+                            timeout *= 2;
+                        }
                     }
-                };
+                }
+                return Ok(false);
+            }
+        }
 
-                active_tasks_lock.write().await.insert(id.clone(), task);
-                tx.send(()).unwrap();
+        // Spawn task execution
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        let active_work_request = work_request.and_started_at(Utc::now());
+        let action = active_work_request.action.clone();
+
+        let handle = tokio::task::spawn(Self::execute_work_request(
+            id.clone(),
+            action.clone(),
+            work_request,
+            handler,
+            rx,
+            data.clone(),
+            self.backend.clone(),
+            self.parallelism_semaphore.clone(),
+            self.task_timeout_secs,
+            self.active_tasks.clone(),
+        ));
+
+        let task = ActiveTask {
+            _handle: handle,
+            request: active_work_request,
+        };
+
+        self.active_tasks.write().await.insert(id.clone(), task);
+        tx.send(()).unwrap();
+
+        Ok(true)
+    }
+
+    /// Execute a work request (spawned as a separate task).
+    async fn execute_work_request(
+        id: String,
+        action: String,
+        work_request: WorkRequest,
+        handler: Arc<dyn Task + Send + Sync>,
+        rx: tokio::sync::oneshot::Receiver<()>,
+        data: Arc<crate::TypeMap>,
+        backend: Arc<B>,
+        parallelism_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+        task_timeout_secs: u64,
+        active_tasks_lock: Arc<tokio::sync::RwLock<HashMap<String, ActiveTask>>>,
+    ) {
+        let _permit = if let Some(sem) = parallelism_semaphore.as_ref() {
+            let s = match sem.acquire().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(id, action, error=%e, "Failed to acquire semaphore");
+                    return;
+                }
+            };
+            Some(s)
+        } else {
+            None
+        };
+
+        rx.await.unwrap();
+
+        tracing::debug!(id, action, "Starting task");
+        let result = tokio::select! {
+            result = handler.run(&data, work_request) => {
+                result
+            },
+            _ = sleep(Duration::from_secs(task_timeout_secs)) => {
+                tracing::error!(id, action, "Task timed out");
+
+                let mut timeout = 1u64;
+                loop {
+                    match backend.mark_attempted(&id).await {
+                        Ok(_) => {
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::error!(id, action, error=%e, "Failed to mark attempted; retrying in {} seconds", timeout);
+                            tokio::time::sleep(
+                                tokio::time::Duration::from_secs(timeout),
+                            )
+                            .await;
+                            timeout *= 2;
+                        }
+                    }
+                }
+                active_tasks_lock.write().await.remove(&id);
+                return;
+            }
+        };
+
+        let mut timeout = 1u64;
+        match result {
+            Ok(_) => {
+                tracing::debug!(id, action, "Finished task");
+                loop {
+                    match backend.mark_succeeded(&id).await {
+                        Ok(_) => {
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::error!(id, action, error=%e, "Failed to mark succeeded; retrying in {} seconds", timeout);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                timeout,
+                            ))
+                            .await;
+                            timeout *= 2;
+                        }
+                    }
+                }
+            }
+            Err(e) => match e {
+                Error::Retry => {
+                    tracing::error!(id, action, error=%e, "Task being retried");
+                    loop {
+                        match backend.mark_attempted(&id).await {
+                            Ok(_) => {
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::error!(id, action, error=%e, "Failed to mark attempted; retrying in {} seconds", timeout);
+                                tokio::time::sleep(
+                                    tokio::time::Duration::from_secs(timeout),
+                                )
+                                .await;
+                                timeout *= 2;
+                            }
+                        }
+                    }
+                }
+                Error::Fail => {
+                    tracing::error!(id, action, error=%e, "Task failed");
+                    loop {
+                        match backend.mark_failed(&id).await {
+                            Ok(_) => {
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::error!(id, action, error=%e, "Failed to mark failed; retrying in {} seconds", timeout);
+                                tokio::time::sleep(
+                                    tokio::time::Duration::from_secs(timeout),
+                                )
+                                .await;
+                                timeout *= 2;
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        active_tasks_lock.write().await.remove(&id);
+    }
+
+    async fn _start(broker: Arc<Self>, poll_interval: u64) {
+        tracing::info!("starting broker worker loop");
+
+        loop {
+            match broker.tick().await {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!(error=%e, "Failed to tick broker");
+                }
             }
 
             tracing::trace!("Sleeping for poll interval ({poll_interval}s)");
@@ -403,14 +498,8 @@ where
     }
 
     pub fn start_workers(&self) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(Self::_start(
-            self.backend.clone(),
-            self.parallelism_semaphore.clone(),
-            self.active_tasks.clone(),
-            self.tasks.clone(),
-            self.poll_interval,
-            self.task_timeout_secs,
-            self.timezone,
-        ))
+        let broker = Arc::new(Clone::clone(self));
+        let poll_interval = self.poll_interval;
+        tokio::spawn(Self::_start(broker, poll_interval))
     }
 }
